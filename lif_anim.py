@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # LIF neuron — phases: static current -> sine+noise -> off -> discrete input pulses.
-# Input current shown on TOP (with red event lines), V_m in the MIDDLE (with V_th, E_L, and threshold dots),
-# spike raster at the BOTTOM. Left→right fill, then scroll.
+# Input current on TOP (with red event lines), V_m in the MIDDLE (with V_th, E_L, and threshold dots),
+# spike raster at the BOTTOM. Left→right fill, then scroll. Tuned for denser spiking.
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -15,43 +15,42 @@ class LIFParams:
     C: float = 200e-12         # F
     gL: float = 10e-9          # S
     EL: float = -70e-3         # V
-    Vth: float = -50e-3        # V
+    Vth: float = -54e-3        # V  (lowered for denser spiking; was -52e-3)
     Vreset: float = -65e-3     # V
-    tau_ref: float = 2e-3      # s
+    tau_ref: float = 1.0e-3    # s  (shorter refractory; was 1.5e-3)
 
 @dataclass
 class DriveParams:
     # Phase 1: static
-    I_static: float = 210e-12  # A
+    I_static: float = 240e-12  # A
     t_static: float = 0.5      # s
 
-    # Phase 2: sine + noise (starts right after t_static)
-    I_bias: float = 120e-12    # A
-    I_amp: float = 250e-12     # A (sine amplitude)
-    f_hz: float = 20.0         # Hz
-    sigma: float = 10e-12      # A (Gaussian noise)
-    t_sine: float = 0.57       # s duration of sine phase
+    # Phase 2: sine + noise
+    I_bias: float = 220e-12    # A (↑ bias; was 150e-12)
+    I_amp: float = 400e-12     # A (↑ amplitude; was 300e-12)
+    f_hz: float = 30.0         # Hz (↑ frequency; was 20 Hz)
+    sigma: float = 15e-12      # A (slightly ↑ noise)
+    t_sine: float = 0.57       # s
 
-    # Phase 3: off (baseline after t_static + t_sine)
-    sigma_after: float = 0.0   # A (residual noise after off; 0 => exact zero)
+    # Phase 3: off
+    sigma_after: float = 0.0   # A (0 => exact zero)
 
 @dataclass
 class EventParams:
     """Discrete 'spiking inputs' injected AFTER the sine phase."""
     n_slow: int = 4                 # widely spaced first pulses
-    slow_gap: float = 0.20          # s between slow pulses (approx)
-    n_burst: int = 6                # rapid pulses following
-    burst_gap: float = 0.035        # s between burst pulses (approx)
-    jitter: float = 0.010           # s of random +/- jitter for each pulse
-    start_after: float = 0.10       # s after sine ends before first pulse
-    delta_v_mv: float = 5.0         # ~desired jump in Vm per pulse (mV)
-    # Computed at runtime:
+    slow_gap: float = 0.06          # s between slow pulses (tighter; was 0.20)
+    n_burst: int = 8                # more pulses in burst (was 6)
+    burst_gap: float = 0.01        # s between burst pulses (tighter; was 0.035)
+    jitter: float = 0.006           # s jitter (a bit tighter; was 0.010)
+    start_after: float = 0.02       # s after sine ends before first pulse
+    delta_v_mv: float = 10.5         # ~desired jump in Vm per pulse (mV)
     times: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=float))
 
 # Sim / display
-dt = 1e-4              # 0.1 ms integration
+dt = 1e-5              # 0.1 ms integration
 fps = 60               # UI target FPS
-sim_speed = 0.2        # simulated seconds per real second (increase to run faster)
+sim_speed = 0.15        # simulated seconds per real second
 steps_per_frame = max(1, int(sim_speed / (dt * fps)))
 window_s = 1.75        # seconds, rolling history
 
@@ -73,7 +72,6 @@ write_idx = -1
 spike_times = []
 
 # Precompute event pulse amplitude from desired ΔV ≈ (area / C)
-# We inject a 1-timestep rectangular pulse: area = I * dt => I = area / dt = (C * ΔV) / dt
 pulse_area = lif.C * (evp.delta_v_mv * 1e-3)  # Coulombs
 pulse_amp = pulse_area / dt                   # Amps (applied for one dt)
 
@@ -136,7 +134,7 @@ def phase_boundaries():
     return t1, t2
 
 def build_event_times(rng: np.random.Generator):
-    """Create post-sine event times: slow (widely spaced) then a rapid burst, with jitter."""
+    """Create post-sine event times: slow (still spaced, but tighter) then a rapid burst, with jitter."""
     t1, t2 = phase_boundaries()
     t_start = t2 + evp.start_after
 
@@ -149,10 +147,7 @@ def build_event_times(rng: np.random.Generator):
 
     # Burst pulses
     burst_ts = []
-    if slow_ts:
-        cur = slow_ts[-1]
-    else:
-        cur = t_start
+    cur = slow_ts[-1] if slow_ts else t_start
     for _ in range(evp.n_burst):
         cur += evp.burst_gap + rng.uniform(-evp.jitter, evp.jitter)
         burst_ts.append(max(t_start, cur))
@@ -178,10 +173,7 @@ def input_current(now: float) -> float:
         base = drv.sigma_after * np.random.randn() if drv.sigma_after > 0.0 else 0.0
 
     # Add delta-like pulses (one-timestep high-current injections)
-    # If |now - t_event| < dt/2, apply one-step pulse.
     if evp.times.size:
-        # Fast check using a small window around 'now'
-        # Find nearest event index via searchsorted
         idx = np.searchsorted(evp.times, now)
         candidates = []
         if idx < evp.times.size:
@@ -208,13 +200,11 @@ def advance(n_steps):
         I_buf[write_idx] = I_t
 
 def get_buffer_in_order(buf):
-    # chronological last window
     if write_idx < 0 or write_idx == win_steps - 1:
         return buf.copy()
     return np.concatenate((buf[write_idx + 1 :], buf[: write_idx + 1]))
 
 def init_axes():
-    # Fix the axis to [0, window_s] so lines fill from left to right initially.
     ax_i.set_xlim(0.0, window_s)
     ax_v.set_xlim(0.0, window_s)
     ax_s.set_xlim(0.0, window_s)
@@ -229,8 +219,6 @@ def init_axes():
     return (line_I, line_vm, spike_lc, thresh_pts, event_lc)
 
 def update_spike_raster_fill_mode():
-    """Render spikes so they appear at correct x when filling (t < window_s)
-    and when scrolling (t >= window_s)."""
     if t < window_s:
         segs = [((ts, 0.0), (ts, 1.0)) for ts in spike_times if 0.0 <= ts <= t]
     else:
@@ -239,17 +227,15 @@ def update_spike_raster_fill_mode():
     spike_lc.set_segments(segs)
 
 def threshold_marker_positions():
-    """Return x, y arrays for threshold markers (one per spike) in current view."""
     if t < window_s:
         xs = [ts for ts in spike_times if 0.0 <= ts <= t]
     else:
         t_start = t - window_s
         xs = [ts - t_start for ts in spike_times if ts >= t_start]
-    ys = [lif.Vth * 1e3] * len(xs)  # threshold level (mV)
+    ys = [lif.Vth * 1e3] * len(xs)
     return np.array(xs, float), np.array(ys, float)
 
 def update_event_lines_fill_mode():
-    """Update red vertical lines for input events in the current view on ax_i."""
     if evp.times.size == 0:
         event_lc.set_segments([])
         return
@@ -264,7 +250,6 @@ def update_event_lines_fill_mode():
         event_lc.set_segments([])
         return
 
-    # Vertical lines across the full y-range of ax_i
     y0, y1 = ax_i.get_ylim()
     segs = [((x, y0), (x, y1)) for x in xs]
     event_lc.set_segments(segs)
@@ -272,35 +257,28 @@ def update_event_lines_fill_mode():
 def animate(_):
     advance(steps_per_frame)
 
-    Vm_win = get_buffer_in_order(V_buf) * 1e3       # mV
-    I_win  = get_buffer_in_order(I_buf) * 1e12      # pA
+    Vm_win = get_buffer_in_order(V_buf) * 1e3
+    I_win  = get_buffer_in_order(I_buf) * 1e12
 
     if t < window_s:
-        # Only show the portion we've simulated, growing left→right.
         n = max(1, min(int(t / dt), win_steps))
         x = np.linspace(0.0, n * dt, n, endpoint=False)
         line_vm.set_data(x, Vm_win[-n:])
         line_I.set_data(x, I_win[-n:])
     else:
-        # Full window, mapped to [0, window_s] with scrolling.
         x = np.linspace(0.0, window_s, win_steps, endpoint=False)
         line_vm.set_data(x, Vm_win)
         line_I.set_data(x, I_win)
 
-    # Spikes + threshold dots
     update_spike_raster_fill_mode()
     tx, ty = threshold_marker_positions()
     thresh_pts.set_data(tx, ty)
-
-    # Event red lines on current
     update_event_lines_fill_mode()
 
-    # x-lims remain [0, window_s] to preserve the left→right behavior
     return (line_I, line_vm, spike_lc, thresh_pts, event_lc)
 
 # ---------------- Run ----------------
 if __name__ == "__main__":
-    init_axes()
     t1, t2 = phase_boundaries()
     txt = (f"τm={(lif.C/lif.gL)*1e3:.0f} ms | Phase1: {drv.t_static:.2f}s @ {drv.I_static*1e12:.0f} pA | "
            f"Phase2: {drv.t_sine:.2f}s sine {drv.f_hz:.0f} Hz, amp {drv.I_amp*1e12:.0f} pA | "
@@ -308,6 +286,7 @@ if __name__ == "__main__":
            f"sim×{sim_speed}")
     ax_v.text(0.01, 0.02, txt, transform=ax_v.transAxes, fontsize=9, alpha=0.85)
 
+    init_axes()
     ani = FuncAnimation(fig, animate, init_func=init_axes,
                         interval=1000.0 / fps, blit=True)
     plt.show()
