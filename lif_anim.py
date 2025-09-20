@@ -2,6 +2,7 @@
 # LIF neuron — phases: static current -> sine+noise -> off -> discrete input pulses.
 # Input current on TOP (with red event lines), V_m in the MIDDLE (with V_th, E_L, and threshold dots),
 # spike raster at the BOTTOM. Left→right fill, then scroll. Tuned for denser spiking.
+# NOW: Vm shows superthreshold overshoot before reset.
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -15,42 +16,42 @@ class LIFParams:
     C: float = 200e-12         # F
     gL: float = 10e-9          # S
     EL: float = -70e-3         # V
-    Vth: float = -54e-3        # V  (lowered for denser spiking; was -52e-3)
+    Vth: float = -54e-3        # V
     Vreset: float = -65e-3     # V
-    tau_ref: float = 1.0e-3    # s  (shorter refractory; was 1.5e-3)
+    tau_ref: float = 1.0e-3    # s
 
 @dataclass
 class DriveParams:
     # Phase 1: static
     I_static: float = 240e-12  # A
-    t_static: float = 0.5      # s
+    t_static: float = 0.4      # s
 
     # Phase 2: sine + noise
-    I_bias: float = 220e-12    # A (↑ bias; was 150e-12)
-    I_amp: float = 400e-12     # A (↑ amplitude; was 300e-12)
-    f_hz: float = 30.0         # Hz (↑ frequency; was 20 Hz)
-    sigma: float = 15e-12      # A (slightly ↑ noise)
-    t_sine: float = 0.57       # s
+    I_bias: float = 220e-12    # A
+    I_amp: float = 400e-12     # A
+    f_hz: float = 30.0         # Hz
+    sigma: float = 15e-12      # A
+    t_sine: float = 0.4       # s
 
     # Phase 3: off
-    sigma_after: float = 0.0   # A (0 => exact zero)
+    sigma_after: float = 0.0   # A
 
 @dataclass
 class EventParams:
     """Discrete 'spiking inputs' injected AFTER the sine phase."""
-    n_slow: int = 4                 # widely spaced first pulses
-    slow_gap: float = 0.06          # s between slow pulses (tighter; was 0.20)
-    n_burst: int = 8                # more pulses in burst (was 6)
-    burst_gap: float = 0.01        # s between burst pulses (tighter; was 0.035)
-    jitter: float = 0.006           # s jitter (a bit tighter; was 0.010)
-    start_after: float = 0.02       # s after sine ends before first pulse
-    delta_v_mv: float = 10.5         # ~desired jump in Vm per pulse (mV)
+    n_slow: int = 4
+    slow_gap: float = 0.06
+    n_burst: int = 8
+    burst_gap: float = 0.01
+    jitter: float = 0.006
+    start_after: float = 0.02
+    delta_v_mv: float = 10.5
     times: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=float))
 
 # Sim / display
-dt = 1e-5              # 0.1 ms integration
+dt = 1e-5              # s (0.01 ms)
 fps = 60               # UI target FPS
-sim_speed = 0.15        # simulated seconds per real second
+sim_speed = 0.15       # simulated seconds per real second
 steps_per_frame = max(1, int(sim_speed / (dt * fps)))
 window_s = 1.75        # seconds, rolling history
 
@@ -116,17 +117,22 @@ ax_i.add_collection(event_lc)
 
 # ---------------- Dynamics ----------------
 def lif_step(V, ref_timer, I_t):
-    spiked = False
+    """
+    One Euler step. IMPORTANT change:
+    - If not refractory, integrate to V_new and *do not* reset here.
+      Return (V_new, ref_timer, spiked_flag), where spiked_flag = V_new >= Vth.
+    - The reset + refractory are applied in the caller (advance) AFTER we record
+      the overshoot for plotting.
+    """
     if ref_timer > 0.0:
-        ref_timer = max(0.0, ref_timer - dt)
-        return V, ref_timer, spiked
+        # In refractory: hold V (already reset) and count down
+        return V, max(0.0, ref_timer - dt), False
+
+    # Integrate
     dV = (-lif.gL * (V - lif.EL) + I_t) / lif.C
-    V = V + dt * dV
-    if V >= lif.Vth:
-        spiked = True
-        V = lif.Vreset
-        ref_timer = lif.tau_ref
-    return V, ref_timer, spiked
+    V_new = V + dt * dV
+    spiked = (V_new >= lif.Vth)
+    return V_new, ref_timer, spiked
 
 def phase_boundaries():
     t1 = drv.t_static
@@ -191,13 +197,26 @@ def advance(n_steps):
     global t, V, ref_timer, write_idx
     for _ in range(n_steps):
         I_t = input_current(t)
-        V, ref_timer, spiked = lif_step(V, ref_timer, I_t)
+
+        # Integrate one step; if spike occurs, we keep the overshoot for plotting.
+        V_next, ref_timer, spiked = lif_step(V, ref_timer, I_t)
+
         t += dt
-        if spiked:
-            spike_times.append(t)
         write_idx = (write_idx + 1) % win_steps
-        V_buf[write_idx] = V
+
+        # Write overshoot (or regular) value to buffer for plotting
+        V_buf[write_idx] = V_next
         I_buf[write_idx] = I_t
+
+        if spiked:
+            # Record spike time at the END of the step (consistent with V_next)
+            spike_times.append(t)
+            # Now enforce reset + refractory for the NEXT step
+            V = lif.Vreset
+            ref_timer = lif.tau_ref
+        else:
+            # No spike: carry over V_next
+            V = V_next
 
 def get_buffer_in_order(buf):
     if write_idx < 0 or write_idx == win_steps - 1:
