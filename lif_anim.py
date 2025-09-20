@@ -1,8 +1,9 @@
-#!/usr/bin/env python3
-# LIF neuron — phases: static current -> sine+noise -> off -> discrete input pulses.
+# If plot is wrong size when the program starts, resize the
+# window and it should be resolved.
+
+# LIF neuron - phases: static current -> sine+noise -> off -> discrete input pulses.
 # Input current on TOP (with red event lines), V_m in the MIDDLE (with V_th, E_L, and threshold dots),
 # spike raster at the BOTTOM. Left→right fill, then scroll. Tuned for denser spiking.
-# NOW: Vm shows superthreshold overshoot before reset.
 
 import numpy as np
 import matplotlib.pyplot as plt
