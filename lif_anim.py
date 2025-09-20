@@ -25,14 +25,14 @@ class LIFParams:
 class DriveParams:
     # Phase 1: static
     I_static: float = 240e-12  # A
-    t_static: float = 0.4      # s
+    t_static: float = 0.2      # s
 
     # Phase 2: sine + noise
     I_bias: float = 220e-12    # A
     I_amp: float = 400e-12     # A
     f_hz: float = 30.0         # Hz
     sigma: float = 15e-12      # A
-    t_sine: float = 0.4       # s
+    t_sine: float = 0.15       # s
 
     # Phase 3: off
     sigma_after: float = 0.0   # A
@@ -45,7 +45,7 @@ class EventParams:
     n_burst: int = 8
     burst_gap: float = 0.01
     jitter: float = 0.006
-    start_after: float = 0.02
+    start_after: float = 0.01
     delta_v_mv: float = 10.5
     times: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=float))
 
@@ -54,7 +54,7 @@ dt = 1e-5              # s (0.01 ms)
 fps = 60               # UI target FPS
 sim_speed = 0.15       # simulated seconds per real second
 steps_per_frame = max(1, int(sim_speed / (dt * fps)))
-window_s = 1.75        # seconds, rolling history
+window_s = 0.75        # seconds, rolling history
 
 lif = LIFParams()
 drv = DriveParams()
